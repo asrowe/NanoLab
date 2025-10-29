@@ -1,16 +1,17 @@
 
 
 class Sample:
-    def __init__(self, id, concentration=None, conc_unit=None, solvent=None, _parents=(), _unit_op = "" ):
+    def __init__(self, id, parents, unit_op, concentration= None, conc_unit=None, solvent=None):
         self.id = id
+        self.unit_op = unit_op
         self.concentration = concentration
         self.conc_unit = conc_unit
         self.solvent = solvent
-        self._parents = _parents
-        self._unit_op = _unit_op
+        self.parents = parents
+    
     
     def __str__(self):
-        out = ""
+
         if self.concentration is None:
             out = str(self.id)
         else:
@@ -21,36 +22,39 @@ class Sample:
     def __repr__(self):
         return self.__str__()
     
-    def cloneAs(self, id, parents: tuple, unit_op):
-        out = Sample(id, self.concentration, self.conc_unit, self.solvent, parents, unit_op)
+    def cloneAs(self, id, parents: list, unit_op: str):
+        out = Sample(id, parents, unit_op, self.concentration, self.conc_unit, self.solvent)
         return out
-    
-    def geneology(self):
-        if len(self._parents) == 0:
-            return (self._unit_op, self.id)
-        else:
-            return [p.geneology() for p in self._parents]
-    
-    def printGeneology(self, indent=""):
-        print(indent + f"{self._unit_op}: {self.id}")
-        if len(self._parents) == 0:
-            pass
-        else:
-            indent += "  "
-            for p in self._parents:
-                p.printGeneology(indent=indent+"  ") 
 
+    def _treewalker(self, acc, depth=0) -> list:
+        node = (depth, self)
+
+        acc.append(node)        
+        if self.parents is not None:
+            for parent in self.parents:
+                parent._treewalker(acc,depth+1)
+
+        return acc
+
+    def printHistory(self) -> None:
+        out = self._treewalker([])
+        out = [ f"{'  ' * depth}Sample:{str(sample)} <-Unit Op({sample.unit_op})" for depth, sample in out]
+        for i in out:
+            print(i)
+
+    
+
+    
 class Labware:
 
-    def __init__(self, contents : Sample, quantity, unit, _parents=()):
+    def __init__(self, contents : Sample, quantity, unit):
         
         self.contents = contents
         self.quantity = quantity
         self.unit = unit
 
-        self._prev = _parents
 
-    def __str__(self):
+    def __str__(self) -> str:
         out = ""
         if self.quantity is None:
             out = str(self.contents)
@@ -58,7 +62,18 @@ class Labware:
             out = f"{self.quantity} {self.unit}: {str(self.contents)}"
         return out
     
-    def __repr__(self):
+    def canAilquot(self, quantity, unit) -> bool:
+        return self.quantity is not None and unit == self.unit and quantity < self.quantity
+    
+    def aliquot(self, quantity, unit, Force) -> None:
+        if self.canAilquot(quantity,unit):
+            self.quantity = self.quantity - quantity
+        elif Force:
+            self.quantity = None
+        else:
+            raise ValueError("Insufficient quantitiy of sample or incompatable units, Try forcing it")
+    
+    def __repr__(self) -> str:
         return self.__str__()
     
 #
@@ -75,10 +90,9 @@ class Dispenser(UnitOp):
     def __init__(self):
         pass
     
-    def __call__(self, sample, quantity, unit, concentration=None, conc_unit=None,solvent=None):
+    def __call__(self, sample_id, quantity, unit, concentration=None, conc_unit=None,solvent=None):
         
-        contents = Sample(sample, concentration, conc_unit, solvent,  _unit_op = "Dispensed as")
-        
+        contents = Sample(sample_id, None , "Dispenser", concentration, conc_unit, solvent )
         out = Labware(contents, quantity, unit)
         return out
 
@@ -90,24 +104,24 @@ class Dispenser(UnitOp):
 # Register operation to model giving a sample of merit a new name
 #
 class Register(UnitOp):
-    def __init__(self,sample_name, prepend=False):
+    def __init__(self,sample_name: str, prepend=False) -> None:
         self.sample_name = sample_name
         self.prepend = prepend
     
-    def __call__(self, current):
+    def __call__(self, current: Labware)-> Labware:
         
-        new_id = self.sample_name
+        
         if self.prepend:
-            new_id = self.sample_name + current.contents.id
+            updated_id = self.sample_name + current.contents.id
+        else:
+            updated_id = self.sample_name
 
-        registered_sample = current.contents.cloneAs(new_id, (current.contents,), "Registered as" )        
+        registered_sample = current.contents.cloneAs(updated_id, [current.contents], "Register" )        
 
         current.contents = registered_sample
         return current
 
-    def __rrshift__(self, other):
-        self.__call__(other)
-
+    
     def __str__(self):
         out = f"Registrying labware contents with name: {self.sample_name}"
         return out
@@ -124,7 +138,7 @@ class Serialiser(UnitOp):
         new_id = f"{current.contents.id}_{self.counter}"
         self.counter += 1
         
-        serialised_sample = current.contents.cloneAs(new_id, (current.contents,), "Serialised as" )        
+        serialised_sample = current.contents.cloneAs(new_id, [current.contents], "Serialiser" )        
 
         current.contents = serialised_sample
         return current
@@ -145,9 +159,9 @@ class Incubator(UnitOp):
         self.temp_unit = temp_unit
     
     def __call__(self, current):
-        incubated = Sample(current.contents.id, _parents=(current.contents,), _unit_op = "Incubated as" )
-
-        current.contents = incubated
+       
+        incubated_sample = current.contents.cloneAs(current.contents.id, [current.contents], "Incubated" )
+        current.contents = incubated_sample
         return current
 
     def __str__(self):
@@ -159,19 +173,20 @@ class Incubator(UnitOp):
 # Aliquoting operation to create subsamples from the current sample
 #
 class Aliquoter(UnitOp):
-    def __init__(self, quantity, unit):
+    def __init__(self, quantity, unit, force=False) -> None:
         self.quantity = quantity
         self.unit = unit
+        self.force = force
     
-    def __call__(self, current):
+    def __call__(self, current :Labware)-> Labware:
         
-        aliquot = Sample(current.contents.id, current.contents.concentration,current.contents.conc_unit, current.contents.solvent, _parents=(current.contents,), _unit_op="Aliquoted as")
-        out = Labware(aliquot, quantity=self.quantity, unit=self.unit)
-        current.contents = aliquot
-
+        current.aliquot(self.quantity, self.unit, self.force)
+        aliquot_sample = current.contents.cloneAs(current.contents.id, [current.contents], "Ailiquot" )
+        out = Labware(aliquot_sample, quantity=self.quantity, unit=self.unit)
+        
         return out
 
-    def __str__(self):
+    def __str__(self) -> str:
         out = f"Aliquoting {self.quantity} {self.unit} of sample"
         return out
 
@@ -182,13 +197,26 @@ class Mixer(UnitOp):
     def __init__(self):
         pass
     
-    def __call__(self, current, other):
-        mix = Sample("Mixture", _parents=(current.contents, other.contents), _unit_op = "Mixer")
-        current.contents = mix
-        current.quantity = None
-        current.unit = None
+    def __call__(self, current :Labware, other:Labware) -> Labware:
+        mix_sample = Sample("Mixture",[current.contents, other.contents],"Mixer" )
+        current.contents = mix_sample
+
+        #aftermixing - other is empty
+        other.contents = Sample("Empty", None,None)
+        other.quantity = None
+        other.unit = None
+        
+        #current is added to if the units match
+        if current.quantity is not None and current.unit == other.unit:
+            current.quantity = current.quantity + other.quantity # type: ignore
+        else:
+            current.quantity = None
+            current.unit = None
+        
         return current
 
     def __str__(self):
         out = "Mixing two labware contents together"
         return out
+    
+
