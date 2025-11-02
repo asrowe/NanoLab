@@ -164,9 +164,14 @@ class Incubator(UnitOp):
         current.contents = incubated_sample
         return current
 
+    def __repl__(self):
+        out = f"Incubate for {self.time}{self.time_unit} at {self.temp}{self.temp_unit}"
+        return out
+    
     def __str__(self):
         out = f"Incubate for {self.time}{self.time_unit} at {self.temp}{self.temp_unit}"
         return out
+
 
 
 #
